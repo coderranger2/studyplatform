@@ -1,0 +1,10 @@
+{
+  "name": "study-platform-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix study-platform run dev",
+    "build": "npm --prefix study-platform run build",
+    "test": "npm --prefix study-platform run test",
+    "lint": "npm --prefix study-platform run lint"
+  }
+}
