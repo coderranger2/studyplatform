@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type {
   CustomQuiz,
   FlashcardDeck,
@@ -12,6 +14,7 @@ import {
   addStudyResource,
   createCustomQuiz,
   createFlashcardDeck,
+  deletePDFNote,
   loadCommunities,
   loadCustomQuizzes,
   loadFlashcardDecks,
@@ -23,12 +26,23 @@ import {
   toggleCardMastery,
   toggleSaveResource
 } from '../utilities/storage.ts';
+import { showToast } from '../components/common/Toast.tsx';
+
+// Configure PDF.js worker using Vite asset URL
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 type ToolTab = 'pdf' | 'flashcards' | 'quizzes' | 'resources';
 
 export const StudyToolsPage: React.FC = () => {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<ToolTab>('flashcards');
+  const [searchParams] = useSearchParams();
+  const queryTab = searchParams.get('tab') as ToolTab | null;
+  const queryDeck = searchParams.get('deck');
+  const queryQuiz = searchParams.get('quiz');
+
+  const [activeTab, setActiveTab] = useState<ToolTab>(
+    queryTab && ['pdf', 'flashcards', 'quizzes', 'resources'].includes(queryTab) ? queryTab : 'flashcards'
+  );
 
   // --- PDF Workspace State ---
   const [pdfNotes, setPdfNotes] = useState<PDFDocumentNote[]>(loadPDFNotes());
@@ -38,6 +52,8 @@ export const StudyToolsPage: React.FC = () => {
   const [manualNotes, setManualNotes] = useState('');
   const [manualSummary, setManualSummary] = useState('');
   const [pdfError, setPdfError] = useState('');
+  const [pdfFeedback, setPdfFeedback] = useState<{ type: 'success' | 'warning' | 'info'; message: string } | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
 
   // --- Flashcards State ---
   const [decks, setDecks] = useState<FlashcardDeck[]>(loadFlashcardDecks());
@@ -96,8 +112,155 @@ export const StudyToolsPage: React.FC = () => {
   // ==========================================
   // PDF Upload & Notes Handlers
   // ==========================================
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+
+  // Auto-dismiss feedback toast after 4s
+  useEffect(() => {
+    if (pdfFeedback) {
+      const timer = setTimeout(() => setPdfFeedback(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [pdfFeedback]);
+
+  // Sync tab/deck/quiz query params if navigated with specific target
+  useEffect(() => {
+    if (queryTab && ['pdf', 'flashcards', 'quizzes', 'resources'].includes(queryTab)) {
+      setActiveTab(queryTab);
+    }
+    if (queryDeck) {
+      const matchedDeck = decks.find((d) => d.id === queryDeck || d.skillId === queryDeck);
+      if (matchedDeck) {
+        setActiveDeckId(matchedDeck.id);
+        setCurrentCardIndex(0);
+        setIsFlipped(false);
+      }
+    }
+    if (queryQuiz) {
+      const matchedQuiz = quizzes.find((q) => q.id === queryQuiz || q.skillId === queryQuiz);
+      if (matchedQuiz) {
+        setActiveQuizId(matchedQuiz.id);
+      }
+    }
+  }, [queryTab, queryDeck, queryQuiz, decks, quizzes]);
+
+  /**
+   * Client-side extractive summarizer: extracts, deduplicates, and organizes
+   * core key takeaways from study documents into clean, readable points.
+   */
+  const generateSummary = (text: string): string => {
+    if (!text || text.length < 30) return '';
+
+    // 1. Repair hyphenated words broken across line breaks (e.g. "perfor- mance" -> "performance")
+    const repaired = text
+      .replace(/(\b[a-zA-Z]+)-\s*[\r\n]+\s*([a-zA-Z]+\b)/g, '$1$2')
+      .replace(/\r\n/g, '\n');
+
+    // 2. Split into distinct lines / segments
+    const rawLines = repaired
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    // 3. Filter boilerplate and extract candidate complete statements
+    const boilerplateRegex = /^(page\s+\d+(\s+of\s+\d+)?|\d+|\u00a9.*|all rights reserved.*|table of contents.*|index.*)$/i;
+    const candidates: string[] = [];
+
+    for (const line of rawLines) {
+      if (boilerplateRegex.test(line)) continue;
+
+      // Split line into sentences if it contains multiple statements
+      const sentences = line.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/);
+      for (const rawS of sentences) {
+        // Strip leading numbering, bullets, list markers (e.g. "1. ", "• ", "- ", "a) ")
+        const cleaned = rawS
+          .replace(/^[\s•*–—\d.)\]-]+/, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+
+        const words = cleaned.split(/\s+/);
+        if (
+          words.length >= 6 &&
+          words.length <= 45 &&
+          cleaned.length >= 25 &&
+          cleaned.length <= 250 &&
+          /[a-zA-Z]/.test(cleaned)
+        ) {
+          candidates.push(cleaned);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      return 'Could not extract organized key points from this document.';
+    }
+
+    // 4. Deduplicate sentences (exact or high prefix similarity)
+    const uniqueCandidates: string[] = [];
+    const seenPrefixes = new Set<string>();
+    for (const c of candidates) {
+      const key = c.toLowerCase().slice(0, 45);
+      if (!seenPrefixes.has(key)) {
+        seenPrefixes.add(key);
+        uniqueCandidates.push(c);
+      }
+    }
+
+    // 5. Score candidate points by relevance, length, and document coverage
+    const keywords = [
+      'important', 'key', 'main', 'summary', 'conclusion', 'result', 'define',
+      'concept', 'principle', 'method', 'approach', 'objective', 'purpose',
+      'function', 'component', 'system', 'process', 'theory', 'learn', 'study',
+      'overview', 'introduction', 'performance', 'architecture', 'strategy',
+      'technique', 'critical', 'fundamental', 'requires', 'measures', 'optimal',
+      'essential', 'benefit', 'advantage', 'feature', 'structure', 'analyze'
+    ];
+
+    const scored = uniqueCandidates.map((sentence, idx) => {
+      const words = sentence.toLowerCase().split(/\W+/).filter(Boolean);
+      const wordCount = words.length;
+
+      // Ideal study takeaway length (10-32 words)
+      const lengthScore = wordCount >= 10 && wordCount <= 32 ? 3 : 1.5;
+
+      // Keyword relevance score
+      const keywordMatches = words.filter((w) => keywords.some((k) => w.startsWith(k))).length;
+      const keywordScore = Math.min(keywordMatches * 1.5, 6);
+
+      // Distribute coverage across document sections
+      const total = uniqueCandidates.length;
+      const posRatio = idx / Math.max(1, total - 1);
+      const positionScore = posRatio < 0.2 ? 2.5 : posRatio > 0.8 ? 2.2 : 1.8;
+
+      return {
+        sentence,
+        score: lengthScore + keywordScore + positionScore,
+        origIndex: idx
+      };
+    });
+
+    // 6. Select top 4 to 6 representative points
+    const targetCount = Math.min(6, Math.max(3, Math.round(uniqueCandidates.length * 0.45)));
+    const topPoints = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, targetCount)
+      // Re-order by document sequence for coherent logical progression
+      .sort((a, b) => a.origIndex - b.origIndex)
+      .map((item) => {
+        let pt = item.sentence;
+        // Capitalize first character
+        pt = pt.charAt(0).toUpperCase() + pt.slice(1);
+        // Ensure terminates with punctuation
+        if (!/[.!?]$/.test(pt)) {
+          pt += '.';
+        }
+        return `• ${pt}`;
+      });
+
+    return topPoints.join('\n\n');
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setPdfError('');
+    setPdfFeedback(null);
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -109,18 +272,117 @@ export const StudyToolsPage: React.FC = () => {
 
     setPdfFileName(file.name);
     setPdfFileSize(file.size);
+    setIsSummarizing(true);
 
-    // Read readable content
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = (event.target?.result as string) || '';
-      const snippet = text.slice(0, 1500) || `[Uploaded file: ${file.name} (${Math.round(file.size / 1024)} KB). Document loaded into your study workspace.]`;
+    try {
+      let extractedText = '';
+
+      if (file.name.toLowerCase().endsWith('.pdf')) {
+        // Read binary array buffer for PDF.js parsing
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({
+          data: new Uint8Array(arrayBuffer),
+          useSystemFonts: true
+        });
+        const pdfDoc = await loadingTask.promise;
+        const pageTexts: string[] = [];
+
+        console.log(`[PDF Diagnostics] File: "${file.name}", Size: ${file.size} bytes, Pages: ${pdfDoc.numPages}`);
+
+        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+          const page = await pdfDoc.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const pageLines: string[] = [];
+          let currentLine = '';
+          let lastY: number | null = null;
+
+          for (const item of textContent.items) {
+            if ('str' in item && typeof item.str === 'string') {
+              if (!item.str && !item.hasEOL) continue;
+              const currentY = Array.isArray(item.transform) ? item.transform[5] : null;
+              const isNewLine = (lastY !== null && currentY !== null && Math.abs(currentY - lastY) > 4) || item.hasEOL;
+
+              if (currentLine && !currentLine.endsWith(' ') && !item.str.startsWith(' ')) {
+                currentLine += ' ';
+              }
+              currentLine += item.str;
+
+              if (isNewLine) {
+                if (currentLine.trim()) {
+                  pageLines.push(currentLine.trim());
+                }
+                currentLine = '';
+              }
+              lastY = currentY;
+            }
+          }
+          if (currentLine.trim()) {
+            pageLines.push(currentLine.trim());
+          }
+
+          console.log(`[PDF Diagnostics] Page ${pageNum}: ${textContent.items.length} text items`);
+          const pageStr = pageLines.join('\n');
+          if (pageStr) {
+            pageTexts.push(pageStr);
+          }
+        }
+
+        extractedText = pageTexts.join('\n\n');
+
+        // Log diagnostics for raw extracted text & cleaned text
+        console.log('[PDF Diagnostics] Raw extracted (first 300 chars):', extractedText.slice(0, 300));
+        const cleanedPreview = extractedText.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+        console.log('[PDF Diagnostics] After cleaning (first 300 chars):', cleanedPreview.slice(0, 300));
+
+        if (extractedText.length > 0) {
+          const sample = extractedText.slice(0, 20);
+          const sampleCodes = Array.from(sample)
+            .map((c) => `${c} (U+${c.charCodeAt(0).toString(16).padStart(4, '0')})`)
+            .join(', ');
+          console.log('[PDF Diagnostics] Character codes sample:', sampleCodes);
+        }
+      } else {
+        // Text / Markdown documents
+        extractedText = await file.text();
+      }
+
+      if (!extractedText.trim()) {
+        const fallbackMsg = `[Uploaded file: ${file.name} (${Math.round(file.size / 1024)} KB). No selectable text content could be extracted from this document.]`;
+        setPdfSnippet(fallbackMsg);
+        setManualSummary('');
+        setPdfFeedback({
+          type: 'info',
+          message: 'Document loaded, but no selectable text was found. You can add notes & summary manually.'
+        });
+        setIsSummarizing(false);
+        return;
+      }
+
+      const snippet = extractedText.slice(0, 1500);
       setPdfSnippet(snippet);
-    };
-    reader.onerror = () => {
-      setPdfSnippet(`[Uploaded binary PDF: ${file.name} (${Math.round(file.size / 1024)} KB). Document loaded into notes workspace.]`);
-    };
-    reader.readAsText(file);
+
+      // Auto-generate summary from valid extracted text
+      const autoSummary = generateSummary(extractedText);
+      if (autoSummary) {
+        setManualSummary(autoSummary);
+        setPdfFeedback({
+          type: 'success',
+          message: `Auto-summary generated from "${file.name}"! You can edit it below.`
+        });
+      }
+    } catch (err: unknown) {
+      console.error('[PDF Diagnostics] Extraction failed:', err);
+      const errMsg = err instanceof Error ? err.message : 'Unknown parsing error';
+      setPdfError(`Failed to extract text from "${file.name}": ${errMsg}`);
+      setPdfSnippet(`[Uploaded file: ${file.name} (${Math.round(file.size / 1024)} KB). Extraction error.]`);
+      setManualSummary('');
+      setPdfFeedback({
+        type: 'warning',
+        message: 'Could not extract text automatically. Write your summary manually below.'
+      });
+    } finally {
+      setIsSummarizing(false);
+    }
   };
 
   const handleSavePdfNotes = () => {
@@ -134,10 +396,30 @@ export const StudyToolsPage: React.FC = () => {
       manualSummary,
       uploadedAt: new Date().toISOString().slice(0, 10)
     };
-    savePDFNote(newNote);
+    const result = savePDFNote(newNote);
+    if (result.duplicate) {
+      setPdfFeedback({ type: 'warning', message: `"${pdfFileName}" is already saved! Remove it first to save again.` });
+      return;
+    }
     const updated = loadPDFNotes();
     setPdfNotes(updated);
-    alert('Notes and document summary saved successfully!');
+    setPdfFeedback({ type: 'success', message: 'Notes & summary saved successfully! +25 XP' });
+  };
+
+  const handleDeletePdfNote = (noteId: string) => {
+    const updated = deletePDFNote(noteId);
+    setPdfNotes(updated);
+    setPdfFeedback({ type: 'info', message: 'Saved note removed from library.' });
+  };
+
+  const handleClearPdfWorkspace = () => {
+    setPdfFileName('');
+    setPdfFileSize(0);
+    setPdfSnippet('');
+    setManualNotes('');
+    setManualSummary('');
+    setPdfError('');
+    setPdfFeedback(null);
   };
 
   // ==========================================
@@ -167,7 +449,7 @@ export const StudyToolsPage: React.FC = () => {
 
     const validCards = newCardsList.filter((c) => c.front.trim() && c.back.trim());
     if (validCards.length === 0) {
-      alert('Please add at least one complete card with front and back.');
+      showToast('Please add at least one complete card with front and back.', 'warning');
       return;
     }
 
@@ -226,7 +508,7 @@ export const StudyToolsPage: React.FC = () => {
       }));
 
     if (validQuestions.length === 0) {
-      alert('Please add at least one question with options.');
+      showToast('Please add at least one question with options.', 'warning');
       return;
     }
 
@@ -579,12 +861,49 @@ export const StudyToolsPage: React.FC = () => {
           ======================================================== */}
       {activeTab === 'pdf' && (
         <section className="pdf-workspace-section">
-          {/* Disclaimer banner */}
+          {/* Info banner */}
           <div className="alert alert-info" style={{ marginBottom: '1.5rem' }}>
             <span>
-              ℹ️ <strong>Manual Notes Workspace:</strong> Upload lecture documents (PDF/TXT) to view text and write manual notes and summaries. No automated AI summarization model is connected.
+              ℹ️ <strong>PDF & Notes Workspace:</strong> Upload study documents to auto-summarize content, write notes, and save to your library. Text files get auto-summaries; binary PDFs can be summarized manually.
             </span>
           </div>
+
+          {/* Feedback Toast */}
+          {pdfFeedback && (
+            <div
+              className={`alert ${
+                pdfFeedback.type === 'success' ? 'alert-success' :
+                pdfFeedback.type === 'warning' ? 'alert-warning' : 'alert-info'
+              }`}
+              style={{
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                animation: 'fadeIn 0.3s ease'
+              }}
+            >
+              <span>
+                {pdfFeedback.type === 'success' && '✓ '}
+                {pdfFeedback.type === 'warning' && '⚠ '}
+                {pdfFeedback.type === 'info' && 'ℹ️ '}
+                {pdfFeedback.message}
+              </span>
+              <button
+                onClick={() => setPdfFeedback(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  fontSize: '1rem',
+                  padding: '0 0.25rem'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           <div className="pdf-workspace-grid">
             {/* Left: Upload & Document Viewer */}
@@ -606,9 +925,25 @@ export const StudyToolsPage: React.FC = () => {
               {pdfError && <div className="alert alert-danger">{pdfError}</div>}
 
               {pdfFileName && (
-                <div className="uploaded-file-meta">
-                  <span className="file-name">📄 {pdfFileName}</span>
-                  <span className="file-size">({Math.round(pdfFileSize / 1024)} KB)</span>
+                <div className="uploaded-file-meta" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <span className="file-name">📄 {pdfFileName}</span>
+                    <span className="file-size">({Math.round(pdfFileSize / 1024)} KB)</span>
+                  </div>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={handleClearPdfWorkspace}
+                    title="Clear current document"
+                    style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}
+                  >
+                    ✕ Clear
+                  </button>
+                </div>
+              )}
+
+              {isSummarizing && (
+                <div style={{ padding: '0.75rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                  ⏳ Generating auto-summary...
                 </div>
               )}
 
@@ -624,15 +959,15 @@ export const StudyToolsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Right: Manual Notes & Summary Editor */}
+            {/* Right: Notes & Summary Editor */}
             <div className="notes-editor-pane">
-              <h3>Manual Notes & Synthesis</h3>
+              <h3>Notes & Auto-Summary</h3>
 
               <div className="form-group">
-                <label>Key Takeaways & Summary</label>
+                <label>Key Takeaways & Summary {manualSummary && '(auto-generated, editable)'}</label>
                 <textarea
-                  rows={4}
-                  placeholder="Synthesize the primary core ideas in your own words..."
+                  rows={8}
+                  placeholder="Summary will be auto-generated on upload, or write your own..."
                   value={manualSummary}
                   onChange={(e) => setManualSummary(e.target.value)}
                 />
@@ -659,28 +994,52 @@ export const StudyToolsPage: React.FC = () => {
               {pdfNotes.length > 0 && (
                 <div className="saved-notes-history" style={{ marginTop: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
                   <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                    Saved Document Notes ({pdfNotes.length})
+                    📚 Saved Document Notes ({pdfNotes.length})
                   </h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                     {pdfNotes.map((note) => (
                       <div
                         key={note.id}
-                        onClick={() => {
-                          setPdfFileName(note.fileName);
-                          setPdfSnippet(note.extractedSnippet);
-                          setManualNotes(note.manualNotes);
-                          setManualSummary(note.manualSummary);
-                        }}
                         style={{
                           padding: '0.45rem 0.65rem',
                           backgroundColor: '#0f172a',
                           borderRadius: '4px',
                           border: '1px solid #1e293b',
-                          cursor: 'pointer',
-                          fontSize: '0.78rem'
+                          fontSize: '0.78rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.5rem'
                         }}
                       >
-                        <strong>📄 {note.fileName}</strong> — <span style={{ color: 'var(--text-muted)' }}>{note.uploadedAt}</span>
+                        <div
+                          onClick={() => {
+                            setPdfFileName(note.fileName);
+                            setPdfFileSize(note.fileSize);
+                            setPdfSnippet(note.extractedSnippet);
+                            setManualNotes(note.manualNotes);
+                            setManualSummary(note.manualSummary);
+                          }}
+                          style={{ cursor: 'pointer', flex: 1 }}
+                        >
+                          <strong>📄 {note.fileName}</strong> — <span style={{ color: 'var(--text-muted)' }}>{note.uploadedAt}</span>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeletePdfNote(note.id);
+                          }}
+                          className="btn btn-sm btn-ghost"
+                          title="Remove this saved note"
+                          style={{
+                            color: '#ef4444',
+                            fontSize: '0.7rem',
+                            padding: '0.15rem 0.4rem',
+                            flexShrink: 0
+                          }}
+                        >
+                          🗑 Remove
+                        </button>
                       </div>
                     ))}
                   </div>

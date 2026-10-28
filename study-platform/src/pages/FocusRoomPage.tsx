@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { SkillId } from '../types/index.ts';
 import { SKILLS } from '../data/skills.ts';
 import { awardXP, unlockBadge } from '../utilities/storage.ts';
+import { showToast } from '../components/common/Toast.tsx';
 
 type PomodoroMode = 'work' | 'shortBreak' | 'longBreak';
 
@@ -35,11 +36,11 @@ export const FocusRoomPage: React.FC = () => {
       setCompletedSessionsCount((c) => c + 1);
       awardXP(`pomodoro_session_${Date.now()}`, 35, `Completed ${workMinutes}m focus session`);
       unlockBadge('badge-pomodoro-focus');
-      alert(`🎉 Focus session complete! Great work on "${customGoal}". Take a break!`);
+      showToast(`🎉 Focus session complete! Great work on "${customGoal}". Take a break! (+35 XP)`, 'success');
       setMode('shortBreak');
       setTimeLeft(breakMinutes * 60);
     } else {
-      alert(`☕ Break time is over! Ready for the next focus sprint?`);
+      showToast(`☕ Break time is over! Ready for the next focus sprint?`, 'info');
       setMode('work');
       setTimeLeft(workMinutes * 60);
     }

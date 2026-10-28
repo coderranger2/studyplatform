@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { SKILLS, SKILL_MAP } from '../data/skills.ts';
+import { LEARNING_GOALS, getGoalById } from '../data/goals.ts';
 import { analyzeSkillGaps } from '../engine/skillGapAnalyzer.ts';
 import { generateRoadmap } from '../engine/roadmapGenerator.ts';
 import {
+  loadSelectedGoal,
   loadUserProgress,
+  saveSelectedGoal,
   toggleActivityCompletion
 } from '../utilities/storage.ts';
 import { SkillBadge } from '../components/common/SkillBadge.tsx';
@@ -12,7 +15,10 @@ import { ProgressBar } from '../components/common/ProgressBar.tsx';
 import type { ActivityType } from '../types/index.ts';
 
 export const RoadmapPage: React.FC = () => {
+  const navigate = useNavigate();
   const [progressState, setProgressState] = useState(loadUserProgress());
+  const [currentGoalId, setCurrentGoalId] = useState<string>(loadSelectedGoal());
+  const currentGoalDef = getGoalById(currentGoalId);
 
   const latestAttempt = progressState.latestAttempt;
   const skillGaps = analyzeSkillGaps(SKILLS, latestAttempt || null);
@@ -27,6 +33,11 @@ export const RoadmapPage: React.FC = () => {
   const handleToggleActivity = (activityId: string) => {
     const updated = toggleActivityCompletion(activityId);
     setProgressState(updated);
+  };
+
+  const handleGoalChange = (newGoalId: string) => {
+    setCurrentGoalId(newGoalId);
+    saveSelectedGoal(newGoalId);
   };
 
   const getActivityTypeLabel = (type: ActivityType) => {
@@ -55,11 +66,38 @@ export const RoadmapPage: React.FC = () => {
           <Link to="/assessment" className="btn btn-secondary">
             {latestAttempt ? 'Retake Assessment' : 'Take Diagnostic'}
           </Link>
+          <Link to="/study-buddy" className="btn btn-secondary">
+            Find Study Buddies 👥
+          </Link>
           <Link to="/progress" className="btn btn-secondary">
             View Full Progress
           </Link>
         </div>
       </header>
+
+      {/* Target Goal Selector */}
+      <section className="learning-goal-banner">
+        <div className="goal-banner-left">
+          <span className="goal-badge-icon">🎯</span>
+          <div>
+            <h3>Active Learning Goal: {currentGoalDef.title}</h3>
+            <p>{currentGoalDef.description}</p>
+          </div>
+        </div>
+        <div className="goal-selector">
+          <select
+            value={currentGoalId}
+            onChange={(e) => handleGoalChange(e.target.value)}
+            aria-label="Change learning goal"
+          >
+            {LEARNING_GOALS.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.shortTitle}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
 
       {!latestAttempt && (
         <div className="alert alert-info">
@@ -142,6 +180,38 @@ export const RoadmapPage: React.FC = () => {
 
                   <h3 className="activity-title">{activity.title}</h3>
                   <p className="activity-description">{activity.description}</p>
+
+                  {/* Contextual Study Tools & Community Shortcuts */}
+                  {!isLocked && (
+                    <div className="activity-shortcuts-bar">
+                      <Link
+                        to={`/tools?tab=flashcards&deck=${activity.skillId}`}
+                        className="act-shortcut-link"
+                      >
+                        🃏 Flashcards
+                      </Link>
+                      <Link
+                        to={`/tools?tab=quizzes&quiz=${activity.skillId}`}
+                        className="act-shortcut-link"
+                      >
+                        📝 Practice Quiz
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/communities?community=comm-web-dev&channel=wd-doubts')}
+                        className="act-shortcut-btn"
+                      >
+                        💬 Discuss in #doubts
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/study-buddy')}
+                        className="act-shortcut-btn"
+                      >
+                        👥 Study Buddy
+                      </button>
+                    </div>
+                  )}
 
                   <div className="activity-footer">
                     <div className="activity-meta">
