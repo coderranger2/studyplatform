@@ -10,6 +10,7 @@ import {
   toggleSaveResource,
   updateReportStatus
 } from '../utilities/storage.ts';
+import { showToast } from '../components/common/Toast.tsx';
 
 export const ProfilePage: React.FC = () => {
   const [profile, setProfile] = useState<StudentProfile>(loadStudentProfile());
@@ -28,7 +29,6 @@ export const ProfilePage: React.FC = () => {
   const [targetRole, setTargetRole] = useState(profile.targetExamOrRole);
   const [interests, setInterests] = useState<string[]>(profile.interests || []);
   const [newInterestInput, setNewInterestInput] = useState('');
-  const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
 
   const savedResources = resources.filter((r) => r.isSaved);
 
@@ -46,8 +46,8 @@ export const ProfilePage: React.FC = () => {
 
     saveStudentProfile(updated);
     setProfile(updated);
-    setSavedFeedback('Profile settings saved successfully!');
-    setTimeout(() => setSavedFeedback(null), 4000);
+    showToast('Profile settings saved successfully!', 'success');
+    window.dispatchEvent(new Event('focus'));
   };
 
   const handleAddInterest = () => {
@@ -103,12 +103,6 @@ export const ProfilePage: React.FC = () => {
           <span>🛡️</span> Admin Moderation ({reports.filter((r) => r.status === 'pending').length})
         </button>
       </nav>
-
-      {savedFeedback && (
-        <div className="alert alert-success" style={{ marginBottom: '1.5rem' }}>
-          <span>✓ {savedFeedback}</span>
-        </div>
-      )}
 
       {/* ========================================================
           TAB 1: PROFILE

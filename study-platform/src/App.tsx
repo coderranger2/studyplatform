@@ -7,7 +7,6 @@ import { DiscoverPage } from './pages/DiscoverPage.tsx';
 import { StudyToolsPage } from './pages/StudyToolsPage.tsx';
 import { StudyBuddyPage } from './pages/StudyBuddyPage.tsx';
 import { CompetencyLabPage } from './pages/CompetencyLabPage.tsx';
-import { TeachersPage } from './pages/TeachersPage.tsx';
 import { LeaderboardPage } from './pages/LeaderboardPage.tsx';
 import { FocusRoomPage } from './pages/FocusRoomPage.tsx';
 import { ProfilePage } from './pages/ProfilePage.tsx';
@@ -20,37 +19,36 @@ import { RoadmapPage } from './pages/RoadmapPage.tsx';
 import { ProgressPage } from './pages/ProgressPage.tsx';
 
 import { resetUserProgress } from './utilities/storage.ts';
+import { showToast } from './components/common/Toast.tsx';
 import './index.css';
 
 export const App: React.FC = () => {
-  const [, setResetTick] = useState(0);
+  const [resetTick, setResetTick] = useState(0);
 
   const handleGlobalReset = () => {
-    if (
-      window.confirm(
-        'Reset all demo progress? This will clear stored communities, chat messages, assessment attempts, and activity progress.'
-      )
-    ) {
-      resetUserProgress();
-      setResetTick((t) => t + 1);
-    }
+    resetUserProgress();
+    setResetTick((t) => t + 1);
+    showToast('✓ Demo progress successfully reset! Restored all default communities, mock chat, and quiz data.', 'success');
   };
 
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Layout onResetDemo={handleGlobalReset} />}>
-          {/* Main Social Study Community Landing */}
-          <Route index element={<CommunitiesPage />} />
-          <Route path="communities" element={<Navigate to="/" replace />} />
-          <Route path="community" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<Layout key={resetTick} onResetDemo={handleGlobalReset} />}>
+          {/* Primary EdTech Learning Dashboard Landing */}
+          <Route index element={<DashboardPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+
+          {/* Social Study Communities (Discord Workspace) */}
+          <Route path="communities" element={<CommunitiesPage />} />
+          <Route path="community" element={<Navigate to="/communities" replace />} />
 
           {/* Core Vision Features */}
           <Route path="discover" element={<DiscoverPage />} />
           <Route path="tools" element={<StudyToolsPage />} />
           <Route path="study-buddy" element={<StudyBuddyPage />} />
           <Route path="competency" element={<CompetencyLabPage />} />
-          <Route path="teachers" element={<TeachersPage />} />
+          <Route path="teachers" element={<Navigate to="/study-buddy" replace />} />
           <Route path="leaderboard" element={<LeaderboardPage />} />
           <Route path="focus" element={<FocusRoomPage />} />
           <Route path="pomodoro" element={<Navigate to="/focus" replace />} />

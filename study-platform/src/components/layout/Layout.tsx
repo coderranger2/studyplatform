@@ -1,6 +1,8 @@
 import React from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Navbar } from './Navbar.tsx';
+import { ToastContainer } from '../common/Toast.tsx';
+import { ErrorBoundary } from '../common/ErrorBoundary.tsx';
 
 interface LayoutProps {
   onResetDemo?: () => void;
@@ -8,16 +10,21 @@ interface LayoutProps {
 
 export const Layout: React.FC<LayoutProps> = ({ onResetDemo }) => {
   const location = useLocation();
-  const isCommunityView = location.pathname === '/' || location.pathname === '/community';
+  const isCommunityView =
+    location.pathname === '/communities' ||
+    location.pathname === '/community';
 
   return (
     <div className="app-shell">
       <Navbar onResetDemo={onResetDemo} />
       <main className={`main-content ${isCommunityView ? 'main-content-fluid' : ''}`}>
         <div className={isCommunityView ? 'content-fluid' : 'content-container'}>
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
+      <ToastContainer />
       <footer className="footer">
         <div className="footer-container">
           <p>

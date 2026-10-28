@@ -1,6 +1,8 @@
 import type {
   AssessmentAttempt,
   Badge,
+  Channel,
+  ChannelType,
   ChatMessage,
   Community,
   CustomQuiz,
@@ -14,7 +16,9 @@ import type {
   TeacherProfile,
   TeacherVerificationApplication,
   UserGamificationState,
-  UserProgressState
+  UserProgressState,
+  StudyBuddyProfile,
+  StudyBuddyRequest
 } from '../types/index.ts';
 
 import {
@@ -26,7 +30,8 @@ import {
   INITIAL_QUIZZES,
   INITIAL_RESOURCES,
   INITIAL_STUDENT_PROFILE,
-  INITIAL_TEACHERS
+  INITIAL_TEACHERS,
+  INITIAL_PEER_PROFILES
 } from '../data/socialData.ts';
 
 const PROGRESS_STORAGE_KEY = 'study_platform_progress_v1';
@@ -42,6 +47,9 @@ const TEACHER_APPS_STORAGE_KEY = 'study_platform_teacher_apps_v1';
 const GAMIFICATION_STORAGE_KEY = 'study_platform_gamification_v1';
 const PROFILE_STORAGE_KEY = 'study_platform_profile_v1';
 const REPORTS_STORAGE_KEY = 'study_platform_reports_v1';
+const PEERS_STORAGE_KEY = 'study_platform_peers_v1';
+const BUDDY_REQUESTS_KEY = 'study_platform_buddy_requests_v1';
+const GOAL_STORAGE_KEY = 'study_platform_selected_goal_v1';
 
 const DEFAULT_PROGRESS: UserProgressState = {
   completedActivityIds: [],
@@ -265,6 +273,52 @@ export function createCommunity(data: {
   return newCommunity;
 }
 
+export function createChannel(
+  communityId: string,
+  data: {
+    name: string;
+    description?: string;
+    type?: ChannelType;
+  }
+): Channel {
+  const communities = loadCommunities();
+  const comm = communities.find((c) => c.id === communityId);
+  if (!comm) {
+    throw new Error(`Community ${communityId} not found`);
+  }
+
+  const cleanName =
+    data.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]/g, '-')
+      .replace(/^-+|-+$/g, '') || 'new-channel';
+
+  const newChannel: Channel = {
+    id: `${communityId}-${cleanName}-${Date.now().toString().slice(-4)}`,
+    communityId,
+    name: cleanName,
+    description: data.description || 'Community discussion channel',
+    type: data.type || 'text'
+  };
+
+  comm.channels.push(newChannel);
+  saveCommunities(communities);
+  awardXP(`channel_create_${newChannel.id}`, 20, 'Created a study channel');
+  return newChannel;
+}
+
+export function updateCommunityGoal(communityId: string, newGoal: string): Community[] {
+  const communities = loadCommunities();
+  const updated = communities.map((c) => {
+    if (c.id === communityId) {
+      return { ...c, activeStudyGoal: newGoal };
+    }
+    return c;
+  });
+  saveCommunities(updated);
+  return updated;
+}
+
 // ==========================================
 // Chat Messages
 // ==========================================
@@ -328,17 +382,60 @@ export function sendChatMessage(data: {
   return newMessage;
 }
 
-export function addMessageReaction(messageId: string, emoji: string): void {
+const USER_REACTIONS_KEY = 'skillforge_user_reactions_v1';
+
+export function loadUserReactions(): Record<string, string[]> {
+  try {
+    const raw = readStorage(USER_REACTIONS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function toggleMessageReaction(
+  messageId: string,
+  emoji: string
+): { reacted: boolean; count: number } {
+  const userReactions = loadUserReactions();
+  const currentMessageReactions = userReactions[messageId] || [];
+  const alreadyReacted = currentMessageReactions.includes(emoji);
+
+  let updatedUserEmojis: string[];
+  if (alreadyReacted) {
+    updatedUserEmojis = currentMessageReactions.filter((e) => e !== emoji);
+  } else {
+    updatedUserEmojis = [...currentMessageReactions, emoji];
+    awardXP(`react_${messageId}_${emoji}`, 5, 'Reacted to study chat message');
+  }
+  userReactions[messageId] = updatedUserEmojis;
+  writeStorage(USER_REACTIONS_KEY, JSON.stringify(userReactions));
+
+  let finalCount = 0;
   const messages = loadMessages();
   const updated = messages.map((m) => {
     if (m.id === messageId) {
       const reactions = { ...(m.reactions || {}) };
-      reactions[emoji] = (reactions[emoji] || 0) + 1;
+      if (alreadyReacted) {
+        reactions[emoji] = Math.max(0, (reactions[emoji] || 1) - 1);
+        if (reactions[emoji] === 0) {
+          delete reactions[emoji];
+        }
+      } else {
+        reactions[emoji] = (reactions[emoji] || 0) + 1;
+      }
+      finalCount = reactions[emoji] || 0;
       return { ...m, reactions };
     }
     return m;
   });
   saveMessages(updated);
+
+  return { reacted: !alreadyReacted, count: finalCount };
+}
+
+export function addMessageReaction(messageId: string, emoji: string): void {
+  toggleMessageReaction(messageId, emoji);
 }
 
 // ==========================================
@@ -544,15 +641,31 @@ export function loadPDFNotes(): PDFDocumentNote[] {
   }
 }
 
-export function savePDFNote(note: PDFDocumentNote): void {
+export function savePDFNote(note: PDFDocumentNote): { saved: boolean; duplicate: boolean } {
   const notes = loadPDFNotes();
+
+  // Check for duplicate by fileName (same file already saved)
+  const duplicateByName = notes.find((n) => n.fileName === note.fileName);
+  if (duplicateByName) {
+    return { saved: false, duplicate: true };
+  }
+
   const existingIdx = notes.findIndex((n) => n.id === note.id);
   const updated = existingIdx >= 0
     ? notes.map((n) => (n.id === note.id ? note : n))
     : [note, ...notes];
 
   writeStorage(PDF_NOTES_STORAGE_KEY, JSON.stringify(updated));
-  awardXP(`pdf_note_${note.id}`, 25, 'Summarized study document');
+  // Use fileName-based key to prevent XP farming from re-uploads
+  awardXP(`pdf_note_${note.fileName}`, 25, 'Summarized study document');
+  return { saved: true, duplicate: false };
+}
+
+export function deletePDFNote(noteId: string): PDFDocumentNote[] {
+  const notes = loadPDFNotes();
+  const updated = notes.filter((n) => n.id !== noteId);
+  writeStorage(PDF_NOTES_STORAGE_KEY, JSON.stringify(updated));
+  return updated;
 }
 
 // ==========================================
@@ -835,6 +948,93 @@ export function updateReportStatus(reportId: string, status: 'resolved' | 'dismi
 }
 
 // ==========================================
+// Learning Goal Selection
+// ==========================================
+
+export function loadSelectedGoal(): string {
+  const raw = readStorage(GOAL_STORAGE_KEY);
+  if (raw) return raw;
+  return 'goal-web-dev';
+}
+
+export function saveSelectedGoal(goalId: string): void {
+  writeStorage(GOAL_STORAGE_KEY, goalId);
+}
+
+// ==========================================
+// Study Buddies & Peer Requests
+// ==========================================
+
+export function loadPeerProfiles(): StudyBuddyProfile[] {
+  try {
+    const raw = readStorage(PEERS_STORAGE_KEY);
+    if (!raw) {
+      writeStorage(PEERS_STORAGE_KEY, JSON.stringify(INITIAL_PEER_PROFILES));
+      return INITIAL_PEER_PROFILES;
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : INITIAL_PEER_PROFILES;
+  } catch {
+    return INITIAL_PEER_PROFILES;
+  }
+}
+
+export function savePeerProfiles(peers: StudyBuddyProfile[]): void {
+  writeStorage(PEERS_STORAGE_KEY, JSON.stringify(peers));
+}
+
+export function loadBuddyRequests(): StudyBuddyRequest[] {
+  try {
+    const raw = readStorage(BUDDY_REQUESTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function sendBuddyRequest(data: {
+  peerId: string;
+  peerName: string;
+  peerAvatar: string;
+  topic: string;
+  studyMode: string;
+  note: string;
+}): StudyBuddyRequest {
+  const currentRequests = loadBuddyRequests();
+  const student = loadStudentProfile();
+
+  const newReq: StudyBuddyRequest = {
+    id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    peerId: data.peerId,
+    peerName: data.peerName,
+    peerAvatar: data.peerAvatar,
+    senderName: student.name,
+    sentAt: 'Just now',
+    topic: data.topic,
+    studyMode: data.studyMode,
+    note: data.note,
+    status: 'sent',
+    isDemo: true
+  };
+
+  const updated = [newReq, ...currentRequests.filter((r) => r.peerId !== data.peerId)];
+  writeStorage(BUDDY_REQUESTS_KEY, JSON.stringify(updated));
+
+  // Award XP for social study engagement (deduplicated)
+  awardXP(`study_buddy_connect_${data.peerId}`, 25, `Connected with study partner ${data.peerName}`);
+
+  return newReq;
+}
+
+export function cancelBuddyRequest(requestId: string): void {
+  const currentRequests = loadBuddyRequests();
+  const updated = currentRequests.filter((r) => r.id !== requestId);
+  writeStorage(BUDDY_REQUESTS_KEY, JSON.stringify(updated));
+}
+
+// ==========================================
 // Reset Demo Progress
 // ==========================================
 
@@ -852,6 +1052,14 @@ export function resetUserProgress(): UserProgressState {
   removeStorage(GAMIFICATION_STORAGE_KEY);
   removeStorage(PROFILE_STORAGE_KEY);
   removeStorage(REPORTS_STORAGE_KEY);
+  removeStorage(PEERS_STORAGE_KEY);
+  removeStorage(BUDDY_REQUESTS_KEY);
+  removeStorage(GOAL_STORAGE_KEY);
+  removeStorage(USER_REACTIONS_KEY);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('skillforge-reset'));
+  }
 
   return { ...DEFAULT_PROGRESS };
 }

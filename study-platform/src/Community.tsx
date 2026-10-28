@@ -107,7 +107,7 @@ export default function Community() {
                 <button
                   className="circle-join-button"
                   onClick={() =>
-                    alert(`You've selected ${circle.name}! Community joining will be connected next.`)
+                    window.location.href = '/'
                   }
                 >
                   Explore ↗

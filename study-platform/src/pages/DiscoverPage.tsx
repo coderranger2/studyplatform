@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Community, CommunityCategory } from '../types/index.ts';
 import { createCommunity, loadCommunities, toggleJoinCommunity } from '../utilities/storage.ts';
+import { showToast } from '../components/common/Toast.tsx';
 
 export const DiscoverPage: React.FC = () => {
   const navigate = useNavigate();
@@ -36,15 +37,22 @@ export const DiscoverPage: React.FC = () => {
   });
 
   const handleToggleJoin = (id: string) => {
+    const target = communities.find((c) => c.id === id);
     const updated = toggleJoinCommunity(id);
     setCommunities(updated);
+    const isNowJoined = updated.find((c) => c.id === id)?.isJoined;
+    if (isNowJoined) {
+      showToast(`Joined ${target?.name || 'community'}! (+30 XP)`, 'success');
+    } else {
+      showToast(`Left ${target?.name || 'community'}.`, 'info');
+    }
   };
 
   const handleCreateCommunity = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCommName.trim()) return;
 
-    createCommunity({
+    const created = createCommunity({
       name: newCommName.trim(),
       category: newCommCategory,
       description: newCommDesc.trim(),
@@ -54,7 +62,8 @@ export const DiscoverPage: React.FC = () => {
 
     setCommunities(loadCommunities());
     setShowCreateModal(false);
-    navigate('/');
+    showToast(`🎉 Created and joined "${created.name}"! (+100 XP)`, 'success');
+    navigate(`/?community=${created.id}`);
   };
 
   return (
@@ -140,7 +149,7 @@ export const DiscoverPage: React.FC = () => {
                 {comm.isJoined && (
                   <button
                     className="btn btn-sm btn-secondary"
-                    onClick={() => navigate('/')}
+                    onClick={() => navigate(`/?community=${comm.id}`)}
                   >
                     Open Chat 💬
                   </button>

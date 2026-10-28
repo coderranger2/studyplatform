@@ -333,3 +333,58 @@ export interface ReportedItem {
   status: 'pending' | 'resolved' | 'dismissed';
 }
 
+// ==========================================
+// Peer Learning & Study Buddies
+// ==========================================
+
+export interface StudyBuddyProfile {
+  id: string;
+  name: string;
+  handle: string;
+  avatar: string;
+  level: number;
+  xp: number;
+  streakDays: number;
+  primarySubject: SkillCategory | 'Web Development' | 'Programming' | 'General';
+  learningGoal: string;
+  targetGoalCategory: string;
+  subjects: string[];
+  interests: string[];
+  bio: string;
+  availability: string;
+  matchedCommunities: { id: string; name: string; icon: string; channelId?: string }[];
+  complementarySkills: SkillId[];
+  weakSkills: SkillId[];
+  status: 'online' | 'studying' | 'offline';
+  studyMode: 'Pair Coding' | 'Flashcards & Quizzes' | 'Pomodoro Co-study' | 'Doubt Clearing';
+}
+
+export interface StudyBuddyRequest {
+  id: string;
+  peerId: string;
+  peerName: string;
+  peerAvatar: string;
+  senderName: string;
+  sentAt: string;
+  topic: string;
+  studyMode: string;
+  note: string;
+  status: 'sent' | 'accepted' | 'declined';
+  isDemo: boolean;
+}
+
+export interface LearningGoalDefinition {
+  id: string;
+  title: string;
+  shortTitle: string;
+  description: string;
+  targetSkillIds: SkillId[];
+  recommendedCommunityIds: string[];
+  recommendedChannelIds: {
+    communityId: string;
+    channelId: string;
+    label: string;
+    reason: string;
+  }[];
+}
+
